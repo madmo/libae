@@ -28,20 +28,27 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef _WIN32
+#include "win32fixes.h"
+#define errno WSAGetLastError()
+#endif
+
 #include "fmacros.h"
 
 #include <sys/types.h>
+#ifndef _WIN32
 #include <sys/socket.h>
-#include <sys/stat.h>
 #include <sys/un.h>
-#include <sys/time.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
+#include <netdb.h>
+#endif
+#include <sys/stat.h>
+#include <sys/time.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <string.h>
-#include <netdb.h>
 #include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -58,6 +65,42 @@ static void anetSetError(char *err, const char *fmt, ...)
     va_end(ap);
 }
 
+#ifdef _WIN32
+static int anetWSAStartup()
+{
+    static int started = 0;
+    static WSADATA _wsd;
+
+    if (!started)
+    {
+        if (WSAStartup(MAKEWORD(2, 2), &_wsd) != 0)
+        {
+            anetSetError(errno, "WSAStartup: %d\n", errno);
+            return ANET_ERR;
+        }
+
+        started = 1;
+    }
+
+    return ANET_OK;
+}
+#endif
+
+#ifdef _WIN32
+int anetSetBlock(char *err, int fd, int non_block) {
+    /* Set the socket nonblocking on Windows
+     * If iMode = 0, blocking is enabled;
+     * If iMode != 0, non-blocking mode is enabled.*/
+    u_long iMode = non_block ? 1 : 0;
+    if (ioctlsocket((SOCKET)fd, FIONBIO, &iMode) == SOCKET_ERROR) {
+        anetSetError(err, "ioctlsocket(FIONBIO): %d\n", errno);
+        return ANET_ERR;
+    };
+
+    return ANET_OK;
+}
+
+#else
 int anetSetBlock(char *err, int fd, int non_block) {
     int flags;
 
@@ -80,6 +123,7 @@ int anetSetBlock(char *err, int fd, int non_block) {
     }
     return ANET_OK;
 }
+#endif
 
 int anetNonBlock(char *err, int fd) {
     return anetSetBlock(err,fd,1);
@@ -248,6 +292,14 @@ static int anetSetReuseAddr(char *err, int fd) {
 
 static int anetCreateSocket(char *err, int domain) {
     int s;
+
+#ifdef _WIN32
+    if (anetWSAStartup() == ANET_ERR)
+    {
+        return ANET_ERR;
+    }
+#endif
+
     if ((s = socket(domain, SOCK_STREAM, 0)) == -1) {
         anetSetError(err, "creating socket: %s", strerror(errno));
         return ANET_ERR;
@@ -276,6 +328,13 @@ static int anetTcpGenericConnect(char *err, char *addr, int port,
     memset(&hints,0,sizeof(hints));
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
+
+#ifdef _WIN32
+    if (anetWSAStartup() == ANET_ERR)
+    {
+        return ANET_ERR;
+    }
+#endif
 
     if ((rv = getaddrinfo(addr,portstr,&hints,&servinfo)) != 0) {
         anetSetError(err, "%s", gai_strerror(rv));
@@ -371,6 +430,12 @@ int anetTcpNonBlockBestEffortBindConnect(char *err, char *addr, int port,
 
 int anetUnixGenericConnect(char *err, char *path, int flags)
 {
+#ifdef _WIN32
+    (void)err;
+    (void)path;
+    (void)flags;
+    return ANET_ERR;
+#else
     int s;
     struct sockaddr_un sa;
 
@@ -393,6 +458,7 @@ int anetUnixGenericConnect(char *err, char *path, int flags)
         return ANET_ERR;
     }
     return s;
+#endif
 }
 
 int anetUnixConnect(char *err, char *path)
@@ -411,7 +477,11 @@ int anetRead(int fd, char *buf, int count)
 {
     int nread, totlen = 0;
     while(totlen != count) {
+#ifdef _WIN32
+        nread = recv(fd,buf,count-totlen, 0);
+#else
         nread = read(fd,buf,count-totlen);
+#endif
         if (nread == 0) return totlen;
         if (nread == -1) return -1;
         totlen += nread;
@@ -426,7 +496,11 @@ int anetWrite(int fd, char *buf, int count)
 {
     int nwritten, totlen = 0;
     while(totlen != count) {
+#ifdef _WIN32
+        nwritten = send(fd,buf,count-totlen, 0);
+#else
         nwritten = write(fd,buf,count-totlen);
+#endif
         if (nwritten == 0) return totlen;
         if (nwritten == -1) return -1;
         totlen += nwritten;
@@ -465,6 +539,13 @@ static int _anetTcpServer(char *err, int port, char *bindaddr, int af, int backl
     int s, rv;
     char _port[6];  /* strlen("65535") */
     struct addrinfo hints, *servinfo, *p;
+
+#ifdef _WIN32
+    if (anetWSAStartup() == ANET_ERR)
+    {
+        return ANET_ERR;
+    }
+#endif
 
     snprintf(_port,6,"%d",port);
     memset(&hints,0,sizeof(hints));
@@ -509,6 +590,13 @@ int anetTcp6Server(char *err, int port, char *bindaddr, int backlog)
 
 int anetUnixServer(char *err, char *path, mode_t perm, int backlog)
 {
+#ifdef _WIN32
+    (void)err;
+    (void)path;
+    (void)perm;
+    (void)backlog;
+    return ANET_ERR;
+#else
     int s;
     struct sockaddr_un sa;
 
@@ -523,6 +611,7 @@ int anetUnixServer(char *err, char *path, mode_t perm, int backlog)
     if (perm)
         chmod(sa.sun_path, perm);
     return s;
+#endif
 }
 
 static int anetGenericAccept(char *err, int s, struct sockaddr *sa, socklen_t *len) {
@@ -562,6 +651,11 @@ int anetTcpAccept(char *err, int s, char *ip, size_t ip_len, int *port) {
 }
 
 int anetUnixAccept(char *err, int s) {
+#ifdef _WIN32
+    (void)err;
+    (void)s;
+    return ANET_ERR;
+#else
     int fd;
     struct sockaddr_un sa;
     socklen_t salen = sizeof(sa);
@@ -569,6 +663,7 @@ int anetUnixAccept(char *err, int s) {
         return ANET_ERR;
 
     return fd;
+#endif
 }
 
 int anetPeerToString(int fd, char *ip, size_t ip_len, int *port) {

@@ -30,12 +30,18 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef _WIN32
+#include "win32fixes.h"
+#endif
+
 #include <stdio.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <unistd.h>
 #include <stdlib.h>
+#ifndef _WIN32
 #include <poll.h>
+#endif
 #include <string.h>
 #include <time.h>
 #include <errno.h>
